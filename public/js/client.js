@@ -14,7 +14,7 @@
  * @link    Official Live demo: https://p2p.mirotalk.com
  * @license Open source: AGPLv3 | Commercial/closed source (official channel): https://docs.mirotalk.com/sites/p2p/
  * @author  Miroslav Pejic - miroslav.pejic.85@gmail.com
- * @version 2.2.33
+ * @version 2.2.52
  *
  */
 
@@ -28,7 +28,7 @@ const copyRoomUrlBtn = getId('copyRoomUrlBtn');
 const roomSessionDuration = getRoomDuration();
 const BREAKOUT_TICKET_KEY = 'mirotalk_breakout_ticket';
 const roomId = getRoomId();
-const myRoomUrl = window.location.origin + '/join/' + roomId; // share room url
+const myRoomUrl = window.location.origin + getJoinRoomPath(roomId); // share room url
 
 // Images
 const images = {
@@ -48,6 +48,7 @@ const images = {
     about: '../images/mirotalk-logo.gif',
     feedback: '../images/feedback.png',
     forbidden: '../images/forbidden.png',
+    banned: '../images/banned.svg',
     avatar: '../images/mirotalk-logo.png',
     recording: '../images/recording.png',
     poster: '../images/loader.gif',
@@ -80,12 +81,14 @@ const className = {
     shareFile: 'fas fa-upload',
     shareVideoAudio: 'fab fa-youtube',
     kickOut: 'fas fa-sign-out-alt',
+    ban: 'fas fa-ban',
     chatOn: 'fas fa-comment',
     chatOff: 'fas fa-comment',
     ghost: 'fas fa-ghost',
     undo: 'fas fa-undo',
     captionOn: 'fas fa-closed-captioning',
     trash: 'fas fa-trash',
+    edit: 'fas fa-pen',
     copy: 'fas fa-copy',
     speech: 'fas fa-volume-high',
     heart: 'fas fa-heart',
@@ -272,6 +275,7 @@ const msgerEmptyNotice = getId('msgerEmptyNotice');
 const msgerEmptyParticipantsNotice = getId('msgerEmptyParticipantsNotice');
 const msgerMain = document.querySelector('.msger-main');
 const msgerEmojiBtn = getId('msgerEmojiBtn');
+const msgerGifBtn = getId('msgerGifBtn');
 const msgerMarkdownBtn = getId('msgerMarkdownBtn');
 const msgerShareFileBtn = getId('msgerShareFileBtn');
 const msgerVideoUrlBtn = getId('msgerVideoUrlBtn');
@@ -346,6 +350,12 @@ const roomEmojiBurstState = {
 
 // Chat room emoji picker
 const msgerEmojiPicker = getId('msgerEmojiPicker');
+
+// Chat room GIF picker (KLIPY)
+const msgerGifPicker = getId('msgerGifPicker');
+const msgerGifSearchInput = getId('msgerGifSearchInput');
+const msgerGifResults = getId('msgerGifResults');
+const msgerGifStatus = getId('msgerGifStatus');
 
 // Chat room connected peers
 const msgerCP = getId('msgerCP');
@@ -582,6 +592,8 @@ const lockRoomBtn = getId('lockRoomBtn');
 const unlockRoomBtn = getId('unlockRoomBtn');
 const joinLockBtn = getId('joinLockBtn');
 const joinUnlockBtn = getId('joinUnlockBtn');
+const lobbyOnBtn = getId('lobbyOnBtn');
+const lobbyOffBtn = getId('lobbyOffBtn');
 
 // File send progress
 const sendFileDiv = getId('sendFileDiv');
@@ -625,6 +637,7 @@ const title = getId('disconnectBannerTitle');
 const msg = getId('disconnectBannerMsg');
 const spinner = getId('disconnectBannerSpinner');
 let disconnectBannerRafId = null;
+let isServerRestarting = false; // Set when the server announces a planned shutdown (e.g. update/redeploy)
 
 //....
 
@@ -832,6 +845,9 @@ let isChatOpenedByParticipantsBtn = false;
 let isOpeningParticipants = false;
 let isCaptionBoxVisible = false;
 let isChatEmojiVisible = false;
+let isChatGifVisible = false;
+let gifSearchConfig = null; // KLIPY client config from serverInfo
+let chatGifSearch = null; // GifSearch instance
 let isChatMarkdownOn = false;
 let isChatPasteTxt = false;
 let pinChatByDefault = false;
@@ -839,6 +855,7 @@ let speechInMessages = false;
 let isSpeechSynthesisSupported = 'speechSynthesis' in window;
 let transcripts = []; // collect all the transcripts to save it later if you need
 let chatMessages = []; // collect chat messages to save it later if want
+let chatMessageRaw = new Map(); // msg_id -> original text of my own messages (for editing)
 let chatGPTcontext = []; // keep chatGPT messages context
 
 let activeConversation = {
@@ -863,6 +880,12 @@ let isMySettingsVisible = false;
 let thisRoomPassword = null;
 let isRoomLocked = false;
 let isJoinLocked = false;
+// room lobby (waiting list kept by the signaling server)
+let isLobbyEnabled = false;
+// presenters can ban an ejected participant from rejoining the room
+let isBanEnabled = false;
+let isWaitingInLobby = false;
+let roomLobby = null;
 let isKeepButtonsVisible = false;
 let isAudioPitchBar = true;
 let isPushToTalkActive = false;
@@ -1023,6 +1046,7 @@ function setButtonsToolTip() {
     setTippy(msgerMaxBtn, 'Maximize', 'bottom');
     setTippy(msgerMinBtn, 'Minimize', 'bottom');
     setTippy(msgerEmojiBtn, 'Emoji', 'top');
+    setTippy(msgerGifBtn, 'GIF', 'top');
     setTippy(msgerMarkdownBtn, 'Markdown', 'top');
     setTippy(msgerShareFileBtn, 'Share file', 'top');
     setTippy(msgerCPBtn, 'Participants', 'bottom');
@@ -1286,7 +1310,7 @@ function getRoomId() {
     let queryRoomId = getQueryParam('room');
 
     // skip /join/
-    let roomId = queryRoomId ? queryRoomId : window.location.pathname.split('/join/')[1];
+    let roomId = queryRoomId ? queryRoomId : decodeRoomPath(window.location.pathname.split('/join/')[1]);
 
     // if not specified room id or 'random', create one random
     if (roomId == '' || roomId === 'random') {
@@ -1314,6 +1338,20 @@ function getRoomId() {
     // Save room name in local storage
     window.localStorage.lastRoom = roomId;
     return roomId;
+}
+
+/**
+ * Decode a /join/<room> path segment back to the original room name (abc%25 -> abc%)
+ * @param {string} roomPath
+ * @returns {string} room name
+ */
+function decodeRoomPath(roomPath) {
+    if (!roomPath) return roomPath;
+    try {
+        return filterXSS(decodeURIComponent(roomPath));
+    } catch {
+        return roomPath; // malformed percent-encoding: keep the raw value
+    }
 }
 
 /**
@@ -1816,6 +1854,8 @@ async function initClientPeer() {
     signalingSocket.on('roomNotAllowed', handleRoomNotAllowed);
     signalingSocket.on('roomIsLocked', handleUnlockTheRoom);
     signalingSocket.on('roomIsJoinLocked', handleRoomJoinLocked);
+    signalingSocket.on('roomBanned', handleRoomBanned);
+    signalingSocket.on('lobby', handleLobby);
     signalingSocket.on('roomTimeLimitReached', handleRoomTimeLimitReached);
     signalingSocket.on('roomTimeLimit', handleRoomTimeLimit);
     signalingSocket.on('roomAction', handleRoomAction);
@@ -1842,6 +1882,7 @@ async function initClientPeer() {
     signalingSocket.on('fileReceiveAbort', abortFileTransfer);
     signalingSocket.on('kickOut', handleKickedOut);
     signalingSocket.on('disconnect', handleDisconnect);
+    signalingSocket.on('serverShutdown', handleServerShutdown);
     signalingSocket.on('removePeer', handleRemovePeer);
 
     VideoDrawingOverlay.onEmitDrawing = (data) => {
@@ -1881,6 +1922,7 @@ async function sendToDataChannel(config) {
 async function handleConnect() {
     console.log('03. Connected to signaling server');
 
+    isServerRestarting = false;
     hideDisconnectBanner();
     myPeerId = signalingSocket.id;
     console.log('04. My peer id [ ' + myPeerId + ' ]');
@@ -1932,6 +1974,8 @@ function handleServerInfo(config) {
         redirect,
         maxRoomParticipants,
         join_locked,
+        lobby,
+        ban,
         time_limit,
     } = config;
 
@@ -1953,6 +1997,10 @@ function handleServerInfo(config) {
         applyWhisperUiAvailability();
     }
 
+    // GIF search (KLIPY) is only delivered to joined peers.
+    gifSearchConfig = config.gifSearch?.enabled && config.gifSearch?.apiKey ? config.gifSearch : null;
+    initChatGif();
+
     // Limit room to n peers
     if (maxRoomParticipants) thisMaxRoomParticipants = maxRoomParticipants;
     if (peers_count > thisMaxRoomParticipants) {
@@ -1964,6 +2012,10 @@ function handleServerInfo(config) {
     // Let start with some basic rules
     isPresenter = is_presenter;
     isJoinLocked = join_locked === true;
+    isLobbyEnabled = lobby === true;
+    isBanEnabled = ban === true;
+    closeLobbyWaiting();
+    if (!isPresenter) roomLobby?.clear();
     console.log('New connection - presenter status from server:', isPresenter);
     isPeerPresenter.innerText = isPresenter;
     setPresenterBadge(myVideoPeerName, isPresenter);
@@ -2004,7 +2056,7 @@ function handleUnauthorized() {
         hideClass: { popup: 'animate__animated animate__fadeOutUp' },
     }).then(() => {
         // Login required to join room
-        openURL(`/login/?room=${roomId}`);
+        openURL(`/login/?room=${encodeURIComponent(roomId)}`);
     });
 }
 
@@ -2223,6 +2275,7 @@ function handleButtonsRule() {
     ].forEach((btn) => elemDisplay(btn.closest('li'), !!buttons.settings.customNoiseSuppression, 'list-item'));
 
     updateJoinLockButtons();
+    updateLobbyButtons();
 
     // Whiteboard
     elemDisplay(
@@ -4155,16 +4208,23 @@ async function handleRTCDataChannels(peer_id) {
                         const dataMessage = JSON.parse(msg.data);
                         switch (dataMessage.type) {
                             case 'chat':
-                                handleDataChannelChat(dataMessage);
+                                handleDataChannelChat(dataMessage, peer_id);
                                 break;
                             case 'chatReaction':
-                                handleDataChannelChatReaction(dataMessage);
+                                handleDataChannelChatReaction(dataMessage, peer_id);
+                                break;
+                            case 'chatDelete':
+                                handleDataChannelChatDelete(dataMessage, peer_id);
+                                break;
+                            case 'chatEdit':
+                                handleDataChannelChatEdit(dataMessage, peer_id);
                                 break;
                             case 'speech':
-                                handleDataChannelSpeechTranscript(dataMessage);
+                                handleDataChannelSpeechTranscript(dataMessage, peer_id);
                                 break;
                             case 'micVolume':
-                                handlePeerVolume(dataMessage);
+                                // The volume belongs to the data channel owner, never to a client supplied peer_id
+                                handlePeerVolume({ ...dataMessage, peer_id });
                                 break;
                             case 'editor':
                                 roomEditor?.handleMessage(peer_id, dataMessage);
@@ -4394,7 +4454,13 @@ async function flushIceCandidates(peer_id) {
 function handleDisconnect(reason) {
     console.log('Disconnected from signaling server', { reason: reason });
 
-    showDisconnectBanner();
+    if (isServerRestarting) {
+        showServerRestartBanner();
+        // A server-initiated disconnect disables socket.io auto-reconnect, so resume it manually
+        if (reason === 'io server disconnect') signalingSocket.connect();
+    } else {
+        showDisconnectBanner();
+    }
     checkRecording();
 
     for (const peer_id in peerConnections) {
@@ -4458,6 +4524,19 @@ function handleDisconnect(reason) {
     // Set reconnection flag to trigger proper rejoin
     isPeerReconnected = true;
     console.log('Set isPeerReconnected=true, will attempt to rejoin on reconnect');
+}
+
+/**
+ * The signaling server announced a planned shutdown (e.g. update/redeploy).
+ * Socket.IO keeps retrying, and the user rejoins automatically once the server is back.
+ * @param {object} data
+ */
+function handleServerShutdown(data) {
+    console.warn('Signaling server shutdown', data);
+    if (isServerRestarting) return;
+    isServerRestarting = true;
+    playSound('alert');
+    showServerRestartBanner();
 }
 
 /**
@@ -6228,6 +6307,7 @@ async function loadRemoteMediaStream(stream, peers, peer_id, kind) {
             const remotePrivateMsgBtn = document.createElement('button');
             const remoteGeoLocationBtn = document.createElement('button');
             const remotePeerKickOut = document.createElement('button');
+            const remotePeerBan = document.createElement('button');
             const remoteVideoToImgBtn = document.createElement('button');
             const remoteVideoFullScreenBtn = document.createElement('button');
             const remoteVideoPinBtn = document.createElement('button');
@@ -6298,6 +6378,11 @@ async function loadRemoteMediaStream(stream, peers, peer_id, kind) {
             remotePeerKickOut.setAttribute('id', peer_id + '_kickOut');
             remotePeerKickOut.className = className.kickOut;
             remotePeerKickOut.setAttribute('aria-label', 'Eject participant');
+
+            // remote peer ban
+            remotePeerBan.setAttribute('id', peer_id + '_ban');
+            remotePeerBan.className = className.ban;
+            remotePeerBan.setAttribute('aria-label', 'Ban participant');
 
             // remote video zoomIn/Out
             remoteVideoZoomInBtn.setAttribute('id', peer_id + 'videoZoomIn');
@@ -6419,6 +6504,11 @@ async function loadRemoteMediaStream(stream, peers, peer_id, kind) {
                 remoteDropdownContent.appendChild(
                     createDropdownItem(remotePeerKickOut, 'Eject participant', remoteDropdownContent, 'red')
                 );
+            buttons.remote.showKickOutBtn &&
+                isBanEnabled &&
+                remoteDropdownContent.appendChild(
+                    createDropdownItem(remotePeerBan, 'Ban participant', remoteDropdownContent, 'red')
+                );
 
             remoteDropdownDiv.appendChild(remoteDropdownBtn);
             // Append dropdown content to body so it escapes overflow:hidden on .Camera
@@ -6519,6 +6609,7 @@ async function loadRemoteMediaStream(stream, peers, peer_id, kind) {
 
             // handle kick out button event
             buttons.remote.showKickOutBtn && handlePeerKickOutBtn(peer_id);
+            buttons.remote.showKickOutBtn && isBanEnabled && handlePeerBanBtn(peer_id);
 
             // set video privacy true
             peer_privacy_status && setVideoPrivacyStatus(remoteMedia.id, peer_privacy_status);
@@ -8265,6 +8356,7 @@ function manageButtons() {
     setCaptionRoomBtn();
     setRoomEmojiButton();
     setChatEmojiBtn();
+    setChatGifBtn();
     setMyWhiteboardBtn();
     setEditorBtn();
     setPollBtn();
@@ -9300,6 +9392,97 @@ function addEmojiToMsg(data) {
 }
 
 /**
+ * GIF picker (KLIPY) chat room button click event
+ */
+function setChatGifBtn() {
+    if (!msgerGifBtn || !msgerGifPicker) return;
+
+    msgerGifBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        toggleChatGif();
+    });
+
+    msgerGifSearchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            e.stopPropagation();
+            setChatGifOpen(false);
+            msgerGifBtn.focus();
+        }
+    });
+
+    handleClickOutside(msgerGifPicker, msgerGifBtn, () => {
+        if (isChatGifVisible) setChatGifOpen(false);
+    });
+
+    initChatGif();
+}
+
+/**
+ * Init the GIF picker. Idempotent: called when the room UI is ready and again once serverInfo arrives.
+ */
+function initChatGif() {
+    if (!msgerGifBtn || chatGifSearch) return;
+    if (!buttons.chat.showGifBtn || !gifSearchConfig || typeof GifSearch === 'undefined') {
+        elemDisplay(msgerGifBtn, false);
+        return;
+    }
+    try {
+        chatGifSearch = new GifSearch({
+            apiKey: gifSearchConfig.apiKey,
+            contentFilter: gifSearchConfig.contentFilter,
+            container: msgerGifPicker,
+            input: msgerGifSearchInput,
+            results: msgerGifResults,
+            status: msgerGifStatus,
+            onSelect: (url) => {
+                setChatGifOpen(false);
+                sendGif(url);
+            },
+        });
+        elemDisplay(msgerGifBtn, true, 'inline-flex');
+    } catch (err) {
+        console.warn('GIF search init failed', err?.message || err);
+        elemDisplay(msgerGifBtn, false);
+    }
+}
+
+function toggleChatGif() {
+    setChatGifOpen(!isChatGifVisible);
+}
+
+function setChatGifOpen(isOpen) {
+    if (!msgerGifPicker || !msgerGifBtn) return;
+    if (isOpen && !chatGifSearch) return;
+    if (isOpen && isChatEmojiVisible) hideChatEmojiPicker();
+    isChatGifVisible = isOpen;
+    msgerGifPicker.classList.toggle('show', isOpen);
+    setColor(msgerGifBtn, isOpen ? '#FFFF00' : '#FFFFFF');
+    msgerGifBtn.setAttribute('aria-expanded', String(isOpen));
+    if (isOpen) {
+        chatGifSearch.open();
+        if (!isMobileDevice) msgerGifSearchInput.focus();
+    }
+}
+
+/**
+ * Send the selected GIF through the regular chat pipeline, keeping any draft text.
+ * @param {string} url KLIPY media url
+ */
+function sendGif(url) {
+    if (!url || !isImageURL(url)) return;
+    if (isChatGPTConversationActive()) {
+        return userLog('info', 'GIFs cannot be sent to ChatGPT', 'top-end');
+    }
+    const draft = msgerInput.value;
+    msgerInput.value = url;
+    isChatPasteTxt = false;
+    // Not awaited: the input is consumed synchronously, and the call may resolve only when an alert is dismissed.
+    sendChatMessage();
+    msgerInput.value = draft;
+    checkLineBreaks();
+}
+
+/**
  * Set my hand button click event
  */
 function setMyHandBtn() {
@@ -9876,8 +10059,7 @@ function getBreakoutTicketRoom(urlRoomId) {
  */
 function getBreakoutRoomURL(targetRoom) {
     const url = new URL(window.location.href);
-    // Room ids read from the path are already percent-encoded: the setter only encodes what a path cannot contain
-    url.pathname = '/join/' + targetRoom;
+    url.pathname = getJoinRoomPath(targetRoom);
     url.hash = '';
     ['room', 'duration', 'name', 'audio', 'video', 'notify'].forEach((param) => url.searchParams.delete(param));
     url.searchParams.set('name', myPeerName);
@@ -10976,6 +11158,13 @@ function setupMySettings() {
     joinUnlockBtn.addEventListener('click', (e) => {
         confirmJoinLock(false);
     });
+    lobbyOnBtn.addEventListener('click', (e) => {
+        handleRoomAction({ action: 'lobbyOn' }, true);
+    });
+    lobbyOffBtn.addEventListener('click', (e) => {
+        confirmLobbyOff();
+    });
+    setupRoomLobby();
 }
 
 /**
@@ -13923,6 +14112,7 @@ function cleanMessages() {
             messages.forEach((msg) => msgerChat.removeChild(msg));
             // clean chat messages
             chatMessages = [];
+            chatMessageRaw.clear();
             // clean chatGPT context
             chatGPTcontext = [];
             // show empty messages
@@ -13979,6 +14169,7 @@ function hideChatRoomAndEmojiPicker() {
     }
     elemDisplay(msgerEmojiPicker, false);
     setColor(msgerEmojiBtn, '#FFFFFF');
+    if (isChatGifVisible) setChatGifOpen(false);
     isChatRoomVisible = false;
     isParticipantsVisible = false;
     isChatOpenedByParticipantsBtn = false;
@@ -14033,10 +14224,12 @@ async function sendChatMessage() {
         await getChatGPTmessage(msg);
     } else if (activeConversation.type === 'private' && activeConversation.peerName) {
         emitMsg(myPeerName, myPeerAvatar, activeConversation.peerName, msg, true, myPeerId, msgId);
-        appendMessage(myPeerName, rightChatAvatar, 'right', msg, true, msgId, activeConversation.peerName);
+        appendMessage(myPeerName, rightChatAvatar, 'right', msg, true, msgId, activeConversation.peerName, myPeerId);
+        chatMessageRaw.set(msgId, msgerInput.value);
     } else {
         emitMsg(myPeerName, myPeerAvatar, 'toAll', msg, false, myPeerId, msgId);
-        appendMessage(myPeerName, rightChatAvatar, 'right', msg, false, msgId);
+        appendMessage(myPeerName, rightChatAvatar, 'right', msg, false, msgId, '', myPeerId);
+        chatMessageRaw.set(msgId, msgerInput.value);
     }
     cleanMessageInput();
 }
@@ -14044,25 +14237,23 @@ async function sendChatMessage() {
 /**
  * handle Incoming Data Channel Chat Messages
  * @param {object} dataMessage chat messages
+ * @param {string} peer_id sender peer id (data channel owner)
  */
-function handleDataChannelChat(dataMessage) {
+function handleDataChannelChat(dataMessage, peer_id = '') {
     if (!dataMessage) return;
 
+    // The sender identity is the data channel owner, never the one declared in the message body
+    const realPeer = allPeers[peer_id];
+    if (!peer_id || !realPeer?.peer_name) return;
+
     // sanitize all params
-    const msgFrom = filterXSS(dataMessage.from);
-    const msgFromAvatar = filterXSS(dataMessage.fromAvatar);
-    const msgFromId = filterXSS(dataMessage.fromId);
+    const msgFrom = filterXSS(realPeer.peer_name);
+    const msgFromAvatar = filterXSS(realPeer.peer_avatar || dataMessage.fromAvatar);
+    const msgFromId = peer_id;
     const msgTo = filterXSS(dataMessage.to);
     const msg = filterXSS(dataMessage.msg);
     const msgPrivate = filterXSS(dataMessage.privateMsg);
     const msgId = filterXSS(dataMessage.msg_id || '');
-
-    // We check if the message is from real peer
-    const from_peer_name = allPeers[msgFromId]['peer_name'];
-    if (from_peer_name != msgFrom) {
-        console.log('Fake message detected', { realFrom: from_peer_name, fakeFrom: msgFrom, msg: msg });
-        return;
-    }
 
     // private message but not for me return
     if (msgPrivate && msgTo != myPeerName) return;
@@ -14092,7 +14283,7 @@ function handleDataChannelChat(dataMessage) {
     }
 
     setPeerChatAvatarImgName('left', msgFrom, msgFromAvatar);
-    appendMessage(msgFrom, leftChatAvatar, 'left', msg, msgPrivate, msgId, msgFrom);
+    appendMessage(msgFrom, leftChatAvatar, 'left', msg, msgPrivate, msgId, msgFrom, peer_id || msgFromId);
     speechInMessages ? speechMessage(true, msgFrom, msg) : playSound('chatMessage');
 
     // Screen reader announcement for incoming chat message
@@ -14245,23 +14436,14 @@ function sendChatReaction(msgId, emoji, event) {
  * Handle incoming data channel chat reactions.
  * @param {object} dataMessage
  */
-function handleDataChannelChatReaction(dataMessage) {
+function handleDataChannelChatReaction(dataMessage, peer_id = '') {
     if (!dataMessage) return;
 
-    const fromId = filterXSS(dataMessage.fromId || '');
-    const peerName = filterXSS(dataMessage.peer_name || '');
+    // The reactor identity is the data channel owner, never the one declared in the message body
+    const realName = allPeers[peer_id]?.peer_name;
+    if (!realName) return;
 
-    if (fromId && allPeers[fromId]?.peer_name && allPeers[fromId].peer_name !== peerName) {
-        console.log('Fake reaction detected', {
-            realFrom: allPeers[fromId].peer_name,
-            fakeFrom: peerName,
-            msgId: dataMessage.msg_id,
-            emoji: dataMessage.emoji,
-        });
-        return;
-    }
-
-    handleChatReaction(dataMessage);
+    handleChatReaction({ ...dataMessage, peer_name: realName, fromId: peer_id });
 }
 
 /**
@@ -14341,8 +14523,17 @@ function pasteToMessageInput() {
  * Handle text transcript getting from peers
  * @param {object} config data
  */
-function handleDataChannelSpeechTranscript(config) {
-    handleSpeechTranscript(config);
+function handleDataChannelSpeechTranscript(config, peer_id = '') {
+    // The speaker identity is the data channel owner, never the one declared in the message body
+    const realPeer = allPeers[peer_id];
+    if (!config || !realPeer?.peer_name) return;
+
+    handleSpeechTranscript({
+        ...config,
+        peer_id,
+        peer_name: realPeer.peer_name,
+        peer_avatar: realPeer.peer_avatar || config.peer_avatar,
+    });
 }
 
 /**
@@ -14429,8 +14620,9 @@ function escapeSpecialChars(regex) {
  * @param {boolean} privateMsg if is private message
  * @param {string} msgId peer id
  * @param {string} to peer name
+ * @param {string} fromId author peer id (set only for messages shared with peers)
  */
-function appendMessage(from, img, side, msg, privateMsg, msgId = null, to = '') {
+function appendMessage(from, img, side, msg, privateMsg, msgId = null, to = '', fromId = '') {
     let time = getFormatDate(new Date());
 
     // sanitize all params
@@ -14449,6 +14641,7 @@ function appendMessage(from, img, side, msg, privateMsg, msgId = null, to = '') 
     const getMsg = filterXSS(msg);
     const getPrivateMsg = filterXSS(privateMsg);
     const normalizedMsgId = normalizeChatMessageId(msgId);
+    const getFromId = filterXSS(fromId || '');
 
     // collect chat messages to save it later
     const conversationPeer = getPrivateMsg ? (getSide === 'left' ? getFrom : getTo) : '';
@@ -14459,6 +14652,7 @@ function appendMessage(from, img, side, msg, privateMsg, msgId = null, to = '') 
         msg: getMsg,
         privateMsg: getPrivateMsg,
         conversationPeer: conversationPeer,
+        msgId: normalizedMsgId,
     });
 
     // check if i receive a private message
@@ -14473,7 +14667,17 @@ function appendMessage(from, img, side, msg, privateMsg, msgId = null, to = '') 
                     class="${className.trash}"
                     style="color:#fff; border:none; background:transparent;"
                     onclick="deleteMessage('msg-${chatMessagesId}')"
-                ></button>
+                ></button>`;
+    if (isOwnSharedChatMessage(getFromId, normalizedMsgId)) {
+        messageActionsHTML += `
+                <button
+                    id="msg-edit-${chatMessagesId}"
+                    class="${className.edit}"
+                    style="color:#fff; border:none; background:transparent;"
+                    onclick="editMessage('msg-${chatMessagesId}')"
+                ></button>`;
+    }
+    messageActionsHTML += `
                 <button
                     id="msg-copy-${chatMessagesId}"
                     class="${className.copy}" 
@@ -14511,6 +14715,7 @@ function appendMessage(from, img, side, msg, privateMsg, msgId = null, to = '') 
             chatType: getPrivateMsg ? 'private' : 'public',
             chatPeer: conversationPeer,
             messageId: normalizedMsgId,
+            messageFromId: getFromId || null,
             messageAvatarTmpId: msgAvatarTmpId,
             messageBubbleClass: msgBubble,
             messageTextId: `message-${chatMessagesId}`,
@@ -14541,6 +14746,7 @@ function appendMessage(from, img, side, msg, privateMsg, msgId = null, to = '') 
     refreshMessageGrouping();
     if (!isMobileDevice) {
         setTippy(getId('msg-delete-' + chatMessagesId), 'Delete', 'top');
+        setTippy(getId('msg-edit-' + chatMessagesId), 'Edit', 'top');
         setTippy(getId('msg-copy-' + chatMessagesId), 'Copy', 'top');
         setTippy(getId('msg-reaction-' + chatMessagesId), 'React', 'top');
         setTippy(getId('msg-speech-' + chatMessagesId), 'Speech', 'top');
@@ -14923,6 +15129,15 @@ function speechElementText(newMsg = true, from, elemId) {
  * @param {string} id msg id
  */
 function deleteMessage(id) {
+    const msgEl = getId(id);
+    if (!msgEl) return;
+
+    const msgId = msgEl.dataset.msgId || '';
+    const fromId = msgEl.dataset.fromId || '';
+
+    // Only the author can delete for everyone, and only messages actually shared with peers (not AI)
+    const canDeleteForEveryone = isOwnSharedChatMessage(fromId, msgId);
+
     playSound('newMessage');
     Swal.fire({
         background: swBg,
@@ -14931,20 +15146,206 @@ function deleteMessage(id) {
         text: 'Delete this message?',
         imageUrl: images.delete,
         showCancelButton: true,
+        showDenyButton: canDeleteForEveryone,
         focusCancel: true,
-        customClass: { confirmButton: 'mirotalk-swal-destructive' },
-        confirmButtonText: 'Delete',
+        customClass: { confirmButton: 'mirotalk-swal-destructive', denyButton: 'mirotalk-swal-destructive' },
+        confirmButtonText: canDeleteForEveryone ? 'Delete for me' : 'Delete',
+        denyButtonText: 'Delete for everyone',
         cancelButtonText: 'Cancel',
         showClass: { popup: 'animate__animated animate__fadeInDown' },
         hideClass: { popup: 'animate__animated animate__fadeOutUp' },
     }).then((result) => {
-        // clean this message
         if (result.isConfirmed) {
-            getId(id).remove();
-            refreshMessageGrouping();
-            toggleMsgerEmptyNotice();
+            removeChatMessageElement(msgEl);
+            playSound('delete');
+        } else if (result.isDenied && canDeleteForEveryone) {
+            sendToDataChannel({
+                type: 'chatDelete',
+                msg_id: msgId,
+                fromId: myPeerId,
+            });
+            removeChatMessageElement(msgEl);
             playSound('delete');
         }
+    });
+}
+
+/**
+ * Remove a chat message element and its collected entry
+ * @param {HTMLElement} msgEl
+ */
+function removeChatMessageElement(msgEl) {
+    if (!msgEl) return;
+    const msgId = msgEl.dataset.msgId || '';
+    msgEl.remove();
+    if (msgId) {
+        chatMessages = chatMessages.filter((m) => m.msgId !== msgId);
+        chatMessageRaw.delete(msgId);
+    }
+    refreshMessageGrouping();
+    toggleMsgerEmptyNotice();
+}
+
+/**
+ * Handle incoming "delete for everyone" chat requests
+ * @param {object} dataMessage
+ * @param {string} peer_id sender peer id (data channel owner)
+ */
+function handleDataChannelChatDelete(dataMessage, peer_id) {
+    if (!dataMessage || typeof dataMessage.msg_id !== 'string' || !peer_id) return;
+
+    const msgId = dataMessage.msg_id.trim().replace(/[^a-zA-Z0-9:_-]/g, '');
+    if (!msgId || msgId.length > 256) return;
+
+    const msgEls = msgerChat?.querySelectorAll(`.msg[data-msg-id="${msgId}"]`) || [];
+    msgEls.forEach((msgEl) => {
+        // Only remove messages actually authored by the requesting peer
+        if (msgEl.dataset.fromId !== peer_id) return;
+
+        const isPrivate = msgEl.dataset.chatType === 'private';
+        const chatPeer = msgEl.dataset.chatPeer || '';
+
+        removeChatMessageElement(msgEl);
+
+        if (isPrivate) {
+            if (!isConversationCurrentlyVisible('private', chatPeer, peer_id) && unreadMessages.private[peer_id] > 0) {
+                unreadMessages.private[peer_id]--;
+                refreshUnreadBadges();
+            }
+        } else if (!isConversationCurrentlyVisible('public') && unreadMessages.public > 0) {
+            unreadMessages.public--;
+            refreshUnreadBadges();
+        }
+    });
+}
+
+/**
+ * Own messages shared with peers (public or private, not AI) can be edited/deleted for everyone
+ * @param {string} fromId author peer id
+ * @param {string} msgId message id
+ * @returns {boolean}
+ */
+function isOwnSharedChatMessage(fromId, msgId) {
+    return !!msgId && !!myPeerId && fromId === myPeerId;
+}
+
+/**
+ * Edit own message for everyone
+ * @param {string} id msg element id
+ */
+function editMessage(id) {
+    const msgEl = getId(id);
+    if (!msgEl) return;
+
+    const msgId = msgEl.dataset.msgId || '';
+    const fromId = msgEl.dataset.fromId || '';
+
+    if (!isOwnSharedChatMessage(fromId, msgId)) return;
+
+    const textEl = msgEl.querySelector('.msg-text > span[id^="message-"]');
+    const currentText = chatMessageRaw.get(msgId) ?? (textEl ? textEl.innerText : '');
+
+    Swal.fire({
+        background: swBg,
+        position: 'center',
+        title: 'Edit message',
+        input: 'textarea',
+        inputValue: currentText,
+        showCancelButton: true,
+        confirmButtonText: 'Save',
+        cancelButtonText: 'Cancel',
+        showClass: { popup: 'animate__animated animate__fadeInDown' },
+        hideClass: { popup: 'animate__animated animate__fadeOutUp' },
+        preConfirm: (value) => {
+            const text = (value || '').trim();
+            if (!text) {
+                Swal.showValidationMessage(
+                    window.i18n?.t('The message cannot be empty', 'dialogs') || 'The message cannot be empty'
+                );
+                return false;
+            }
+            return text;
+        },
+    }).then((result) => {
+        if (!result.isConfirmed || !msgEl.isConnected) return;
+
+        const newText = filterXSS(result.value);
+        if (newText === currentText) return;
+
+        const msg = checkMsg(newText);
+        if (!msg) return;
+
+        sendToDataChannel({
+            type: 'chatEdit',
+            msg_id: msgId,
+            fromId: myPeerId,
+            msg: msg,
+        });
+        chatMessageRaw.set(msgId, newText);
+        applyChatMessageEdit(msgEl, msg);
+    });
+}
+
+/**
+ * Replace the rendered text of a chat message and mark it as edited
+ * @param {HTMLElement} msgEl
+ * @param {string} msg new message
+ */
+function applyChatMessageEdit(msgEl, msg) {
+    const textEl = msgEl.querySelector('.msg-text > span[id^="message-"]');
+    if (!textEl) return;
+
+    const getMsg = filterXSS(msg);
+    textEl.innerHTML = processMessage(getMsg);
+    hljs.highlightAll();
+
+    const msgId = msgEl.dataset.msgId || '';
+    const entry = msgId ? chatMessages.find((m) => m.msgId === msgId) : null;
+    if (entry) {
+        entry.msg = getMsg;
+        entry.edited = true;
+    }
+
+    markChatMessageEdited(msgEl);
+}
+
+/**
+ * Add (or refresh) the "edited" badge next to the message time
+ * @param {HTMLElement} msgEl
+ */
+function markChatMessageEdited(msgEl) {
+    const timeEl = msgEl.querySelector('.msg-info-time');
+    if (!timeEl) return;
+    const label = window.i18n?.t('edited', 'labels') || 'edited';
+    let badge = timeEl.querySelector('.msg-edited-badge');
+    if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'msg-edited-badge';
+        badge.textContent = label;
+        timeEl.appendChild(badge);
+    }
+    badge.title = `${label} ${getFormatDate(new Date())}`;
+}
+
+/**
+ * Handle incoming "edit for everyone" chat requests
+ * @param {object} dataMessage
+ * @param {string} peer_id sender peer id (data channel owner)
+ */
+function handleDataChannelChatEdit(dataMessage, peer_id) {
+    if (!dataMessage || typeof dataMessage.msg_id !== 'string' || typeof dataMessage.msg !== 'string' || !peer_id) {
+        return;
+    }
+
+    const msgId = dataMessage.msg_id.trim().replace(/[^a-zA-Z0-9:_-]/g, '');
+    if (!msgId || msgId.length > 256) return;
+    if (!dataMessage.msg.trim() || dataMessage.msg.length > 100000) return;
+
+    const msgEls = msgerChat?.querySelectorAll(`.msg[data-msg-id="${msgId}"]`) || [];
+    msgEls.forEach((msgEl) => {
+        // Only edit messages actually authored by the requesting peer
+        if (msgEl.dataset.fromId !== peer_id) return;
+        applyChatMessageEdit(msgEl, dataMessage.msg);
     });
 }
 
@@ -15132,6 +15533,7 @@ async function msgerAddPeers(peers) {
                 if (peer_presenter) {
                     dropdownOptions = `
                         ${getMsgerParticipantDropdownActionMarkup(`${peer_id}_pKickOut`, 'fas fa-user-slash', 'Eject participant', 'danger')}
+                        ${isBanEnabled ? getMsgerParticipantDropdownActionMarkup(`${peer_id}_pBan`, 'fas fa-ban', 'Ban participant', 'danger') : ''}
                         ${getMsgerParticipantDropdownActionMarkup(`${peer_id}_pToggleAudio`, 'fas fa-microphone', 'Mute microphone', 'danger')}
                         ${getMsgerParticipantDropdownActionMarkup(`${peer_id}_pToggleVideo`, 'fas fa-video', 'Stop video', 'danger')}
                         ${getMsgerParticipantDropdownActionMarkup(`${peer_id}_pToggleScreen`, 'fas fa-desktop', 'Stop screen', 'danger')}
@@ -15180,6 +15582,10 @@ async function msgerAddPeers(peers) {
                 const msgerPrivateBtn = getId(peer_id + '_pMsgBtn');
                 setPresenterBadge(msgerPrivateBtn, peers[peer_id]['peer_presenter']);
                 const msgerPrivateKickOutBtn = getId(peer_id + '_pKickOut');
+                getId(peer_id + '_pBan')?.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    kickOut(peer_id, true);
+                });
                 const msgerPrivateToggleAudioBtn = getId(peer_id + '_pToggleAudio');
                 const msgerPrivateToggleVideoBtn = getId(peer_id + '_pToggleVideo');
                 const msgerPrivateToggleScreenBtn = getId(peer_id + '_pToggleScreen');
@@ -15352,7 +15758,8 @@ function addMsgerPrivateBtn(
         const toPeerName = msgerPrivateBtn.dataset.value;
         const msgId = createChatMessageId();
         emitMsg(myPeerName, myPeerAvatar, toPeerName, pMsg, true, myPeerId, msgId);
-        appendMessage(myPeerName, rightChatAvatar, 'right', pMsg, true, msgId, toPeerName);
+        appendMessage(myPeerName, rightChatAvatar, 'right', pMsg, true, msgId, toPeerName, myPeerId);
+        chatMessageRaw.set(msgId, msgerPrivateMsgInput.value);
         msgerPrivateMsgInput.value = '';
         if (!shouldDockParticipantsPanel()) {
             syncParticipantsPanelVisibility(false);
@@ -15742,6 +16149,7 @@ function hideShowEmojiPicker() {
 }
 
 function showChatEmojiPicker() {
+    if (isChatGifVisible) setChatGifOpen(false);
     elemDisplay(msgerEmojiPicker, true, 'block');
     setColor(msgerEmojiBtn, '#FFFF00');
     isChatEmojiVisible = true;
@@ -15789,6 +16197,7 @@ function downloadChatMsgs() {
             to: message.to || '',
             msg: message.msg,
             privateMsg: isPrivate,
+            ...(message.edited ? { edited: true } : {}),
         });
     });
 
@@ -17349,6 +17758,8 @@ function handleRoomAction(config, emit = false) {
                 break;
             case 'joinLockOn':
             case 'joinLockOff':
+            case 'lobbyOn':
+            case 'lobbyOff':
                 sendToServer('roomAction', thisConfig);
                 handleRoomStatus(thisConfig);
                 break;
@@ -17411,9 +17822,184 @@ function handleRoomStatus(config) {
             updateJoinLockButtons();
             screenReaderAccessibility.announceMessage(`${peer_name} unlocked the room for new participants`);
             break;
+        case 'lobbyOn':
+            playSound('locked');
+            userLog(
+                'toast',
+                `${icons.user} ${peer_name} \n has enabled the lobby, new guests wait to be admitted`,
+                'top',
+                6000
+            );
+            isLobbyEnabled = true;
+            updateLobbyButtons();
+            screenReaderAccessibility.announceMessage(`${peer_name} enabled the lobby`);
+            break;
+        case 'lobbyOff':
+            userLog(
+                'toast',
+                `${icons.user} ${peer_name} \n has disabled the lobby, new guests join directly`,
+                'top',
+                6000
+            );
+            isLobbyEnabled = false;
+            updateLobbyButtons();
+            screenReaderAccessibility.announceMessage(`${peer_name} disabled the lobby`);
+            break;
         default:
             break;
     }
+}
+
+/**
+ * Show the lobby on or lobby off button according to the current room state (presenters only)
+ */
+function updateLobbyButtons() {
+    const canManage = buttons.settings.showLobbyBtn && isPresenter;
+    elemDisplay(lobbyOnBtn, canManage && !isLobbyEnabled);
+    elemDisplay(lobbyOffBtn, canManage && isLobbyEnabled);
+}
+
+/**
+ * Ask the presenter to confirm turning the lobby off, everyone waiting is let in
+ */
+function confirmLobbyOff() {
+    if (!roomLobby?.size) return handleRoomAction({ action: 'lobbyOff' }, true);
+
+    playSound('newMessage');
+    Swal.fire({
+        background: swBg,
+        imageUrl: images.locked,
+        title: 'Disable lobby?',
+        text: translateDialogText('Everyone waiting in the lobby ({count}) will join the room.').replace(
+            '{count}',
+            roomLobby.size
+        ),
+        showCancelButton: true,
+        confirmButtonText: 'Disable lobby',
+        cancelButtonText: 'Cancel',
+        showClass: { popup: 'animate__animated animate__fadeInDown' },
+        hideClass: { popup: 'animate__animated animate__fadeOutUp' },
+    }).then((result) => {
+        if (result.isConfirmed) handleRoomAction({ action: 'lobbyOff' }, true);
+    });
+}
+
+/**
+ * Presenters: panel with the guests waiting in the lobby
+ */
+function setupRoomLobby() {
+    roomLobby = new RoomLobby({
+        elements: {
+            panel: getId('lobbyPanel'),
+            count: getId('lobbyCount'),
+            toggleBtn: getId('lobbyToggleBtn'),
+            list: getId('lobbyList'),
+            acceptAllBtn: getId('lobbyAcceptAllBtn'),
+            rejectAllBtn: getId('lobbyRejectAllBtn'),
+        },
+        send: (action, peer_id) =>
+            sendToServer('lobby', {
+                room_id: roomId,
+                peer_name: myPeerName,
+                peer_uuid: myPeerUUID,
+                action,
+                peer_id,
+            }),
+        getAvatar: (peer) => {
+            const name = peer.peer_name || 'Guest';
+            if (isValidAvatarURL(peer.peer_avatar)) return peer.peer_avatar;
+            return isValidEmail(name) ? genGravatar(name) : genAvatarSvg(name, 32);
+        },
+        onNewPeers: (peers) => {
+            playSound('notify');
+            const message =
+                peers.length === 1
+                    ? roomLobby.t('{name} is waiting in the lobby').replace('{name}', peers[0].peer_name || 'Guest')
+                    : roomLobby.t('{count} guests are waiting in the lobby').replace('{count}', peers.length);
+            userLog('toast', `${icons.user} ${message}`, 'top', 6000);
+            screenReaderAccessibility.announceMessage(message);
+        },
+    });
+}
+
+/**
+ * Lobby message from the signaling server
+ * @param {object} data { action, peers? }
+ */
+function handleLobby(data) {
+    switch (data?.action) {
+        case 'list':
+            if (isPresenter) roomLobby?.update(data.peers);
+            break;
+        case 'waiting':
+            showLobbyWaiting();
+            break;
+        case 'admitted':
+            closeLobbyWaiting();
+            userLog('toast', 'The host let you in', 'top', 4000);
+            break;
+        case 'rejected':
+            handleLobbyRejected();
+            break;
+        default:
+            break;
+    }
+}
+
+/**
+ * Guest: waiting for a presenter to let it in
+ */
+function showLobbyWaiting() {
+    isWaitingInLobby = true;
+    playSound('notify');
+    Swal.fire({
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        background: swBg,
+        position: 'center',
+        icon: 'info',
+        iconHtml: '<i class="fas fa-user-clock"></i>',
+        title: 'Waiting in the lobby',
+        text: 'The host will let you in soon. Please wait...',
+        showConfirmButton: false,
+        showCancelButton: true,
+        cancelButtonText: 'Leave',
+        showClass: { popup: 'animate__animated animate__fadeInDown' },
+        hideClass: { popup: 'animate__animated animate__fadeOutUp' },
+    }).then((result) => {
+        if (isWaitingInLobby && result.dismiss === Swal.DismissReason.cancel) {
+            isWaitingInLobby = false;
+            openURL('/newcall');
+        }
+    });
+}
+
+function closeLobbyWaiting() {
+    if (!isWaitingInLobby) return;
+    isWaitingInLobby = false;
+    Swal.close();
+}
+
+/**
+ * Guest: a presenter rejected the request to join
+ */
+function handleLobbyRejected() {
+    isWaitingInLobby = false;
+    playSound('alert');
+    Swal.fire({
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        background: swBg,
+        position: 'center',
+        imageUrl: images.forbidden,
+        title: 'Request denied',
+        text: 'The host did not let you join this room.',
+        confirmButtonText: 'Ok',
+        showClass: { popup: 'animate__animated animate__fadeInDown' },
+        hideClass: { popup: 'animate__animated animate__fadeOutUp' },
+    }).then(() => {
+        openURL('/newcall');
+    });
 }
 
 /**
@@ -17464,6 +18050,31 @@ function handleRoomJoinLocked() {
         imageUrl: images.locked,
         title: 'Oops, Room is Locked',
         text: 'The host has locked the room, new participants are not allowed to join.',
+        confirmButtonText: `Ok`,
+        showClass: { popup: 'animate__animated animate__fadeInDown' },
+        hideClass: { popup: 'animate__animated animate__fadeOutUp' },
+    }).then(() => {
+        openURL('/newcall');
+    });
+}
+
+/**
+ * A presenter banned you from this room, can't join it again
+ */
+function handleRoomBanned() {
+    playSound('eject');
+
+    console.log('Banned from this room');
+    Swal.fire({
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        background: swBg,
+        position: 'center',
+        imageUrl: images.banned,
+        imageWidth: 128,
+        imageHeight: 128,
+        title: 'Oops, You are banned',
+        text: 'A presenter banned you from this room, you are not allowed to join it again.',
         confirmButtonText: `Ok`,
         showClass: { popup: 'animate__animated animate__fadeInDown' },
         hideClass: { popup: 'animate__animated animate__fadeOutUp' },
@@ -20187,18 +20798,35 @@ function handlePeerKickOutBtn(peer_id) {
 }
 
 /**
- * Eject peer, confirm before
+ * Handle peer ban event button
  * @param {string} peer_id socket.id
  */
-function kickOut(peer_id) {
+function handlePeerBanBtn(peer_id) {
+    const peerBanBtn = getId(peer_id + '_ban');
+    peerBanBtn.addEventListener('click', (e) => {
+        isPresenter
+            ? kickOut(peer_id, true)
+            : msgPopup('warning', 'Only the presenter can ban participants', 'top-end', 4000);
+    });
+}
+
+/**
+ * Eject peer, confirm before
+ * @param {string} peer_id socket.id
+ * @param {boolean} ban the peer can't join the room again
+ */
+function kickOut(peer_id, ban = false) {
     const pName = getId(peer_id + '_name').innerText;
 
     Swal.fire({
         background: swBg,
         position: 'center',
-        imageUrl: images.leave,
-        title: 'Eject participant',
-        text: `Are you sure you want to eject ${pName}?`,
+        imageUrl: ban ? images.banned : images.leave,
+        ...(ban && { imageWidth: 128, imageHeight: 128 }),
+        title: ban ? 'Ban participant' : 'Eject participant',
+        text: ban
+            ? `Are you sure you want to ban ${pName}? They will not be able to join this room again.`
+            : `Are you sure you want to eject ${pName}?`,
         input: 'text',
         inputPlaceholder: 'Reason (optional)',
         inputAttributes: {
@@ -20209,7 +20837,7 @@ function kickOut(peer_id) {
         showCancelButton: true,
         focusCancel: true,
         customClass: { confirmButton: 'mirotalk-swal-destructive' },
-        confirmButtonText: 'Eject participant',
+        confirmButtonText: ban ? 'Ban participant' : 'Eject participant',
         cancelButtonText: 'Cancel',
         // SweetAlert 11.4.8 focuses inputs after its initial button focus.
         didOpen: () => Swal.getCancelButton().focus(),
@@ -20217,13 +20845,14 @@ function kickOut(peer_id) {
         hideClass: { popup: 'animate__animated animate__fadeOutUp' },
     }).then((result) => {
         if (result.isConfirmed) {
-            // send peer to kick out from room
+            // send peer to kick out from room, a banned peer can't rejoin it
             sendToServer('kickOut', {
                 room_id: roomId,
                 peer_id: peer_id,
                 peer_uuid: myPeerUUID,
                 peer_name: myPeerName,
                 peer_kicked_reason: (result.value || '').trim(),
+                ban,
             });
         }
     });
@@ -20300,7 +20929,7 @@ function handleCaptionActions(config) {
 function handleKickedOut(config) {
     signalingSocket.disconnect();
 
-    const { peer_name, peer_kicked_reason } = config;
+    const { peer_name, peer_kicked_reason, banned } = config;
 
     playSound('eject');
 
@@ -20310,8 +20939,9 @@ function handleKickedOut(config) {
         allowOutsideClick: false,
         background: swBg,
         position: 'center',
-        imageUrl: images.leave,
-        title: 'Kicked out!',
+        imageUrl: banned ? images.banned : images.leave,
+        ...(banned && { imageWidth: 128, imageHeight: 128 }),
+        title: banned ? 'Banned!' : 'Kicked out!',
         html: renderRoomTemplate('tpl-kicked-out-modal', {
             text: {
                 peerName: peer_name,
@@ -20351,7 +20981,7 @@ function showAbout() {
     Swal.fire({
         background: swBg,
         position: 'center',
-        title: brand.about?.title && brand.about.title.trim() !== '' ? brand.about.title : 'WebRTC P2P v2.2.33',
+        title: brand.about?.title && brand.about.title.trim() !== '' ? brand.about.title : 'WebRTC P2P v2.2.52',
         imageUrl: brand.about?.imageUrl && brand.about.imageUrl.trim() !== '' ? brand.about.imageUrl : images.about,
         customClass: { image: 'img-about' },
         html: renderRoomTemplate('tpl-about-modal', {
@@ -20717,6 +21347,23 @@ function showDisconnectBanner() {
     icon.className = 'fa-solid fa-wifi-exclamation';
     title.textContent = 'Connection lost';
     msg.innerHTML = 'Reconnecting to signaling server\u2026';
+    spinner.style.opacity = '1';
+    if (disconnectBannerRafId) cancelAnimationFrame(disconnectBannerRafId);
+    disconnectBannerRafId = requestAnimationFrame(() => {
+        disconnectBannerRafId = null;
+        banner.classList.add('visible');
+    });
+}
+
+/**
+ * Show a persistent banner indicating the signaling server is restarting (planned update).
+ */
+function showServerRestartBanner() {
+    if (!banner) return;
+    banner.classList.remove('reconnected');
+    icon.className = 'fa-solid fa-screwdriver-wrench';
+    title.textContent = 'Server restarting';
+    msg.textContent = 'The server is being updated. You will be reconnected automatically.';
     spinner.style.opacity = '1';
     if (disconnectBannerRafId) cancelAnimationFrame(disconnectBannerRafId);
     disconnectBannerRafId = requestAnimationFrame(() => {
@@ -21382,6 +22029,11 @@ function setupQuickDeviceSwitchDropdowns() {
         menuEl.appendChild(row);
     }
 
+    // The menus stay open after picking a device; actions that open another panel close them explicitly
+    function hideDeviceMenu(toggleEl, menuEl) {
+        closeMenu(toggleEl, menuEl);
+    }
+
     function appendSelectOptions(menuEl, selectEl, emptyLabel, rebuildFn, meterCollector) {
         if (!menuEl || !selectEl) {
             const btn = document.createElement('button');
@@ -21489,6 +22141,7 @@ function setupQuickDeviceSwitchDropdowns() {
         settingsBtn.appendChild(settingsIcon);
         settingsBtn.appendChild(document.createTextNode(' Open Video Settings'));
         settingsBtn.addEventListener('click', () => {
+            hideDeviceMenu(videoToggle, videoMenu);
             hideShowMySettings();
             // Simulate tab click to open video devices tab
             setTimeout(() => {
@@ -21593,6 +22246,7 @@ function setupQuickDeviceSwitchDropdowns() {
             document.createTextNode(` ${window.i18n?.t('Open Audio Settings', 'labels') || 'Open Audio Settings'}`)
         );
         settingsBtn.addEventListener('click', () => {
+            hideDeviceMenu(audioToggle, audioMenu);
             hideShowMySettings();
             // Simulate tab click to open audio devices tab
             setTimeout(() => {
@@ -21647,9 +22301,10 @@ function setupQuickDeviceSwitchDropdowns() {
 
     // Close on outside click
     document.addEventListener('click', (e) => {
-        const t = e.target;
-        const inVideo = videoDropdown && (videoDropdown === t || videoDropdown.contains(t));
-        const inAudio = audioDropdown && (audioDropdown === t || audioDropdown.contains(t));
+        // Menu items are rebuilt on click, so the target may already be detached; use the original event path
+        const path = e.composedPath();
+        const inVideo = !!videoDropdown && path.includes(videoDropdown);
+        const inAudio = !!audioDropdown && path.includes(audioDropdown);
         if (!inVideo) closeMenu(videoToggle, videoMenu);
         if (!inAudio) closeMenu(audioToggle, audioMenu);
     });
@@ -21660,10 +22315,6 @@ function setupQuickDeviceSwitchDropdowns() {
         closeMenu(videoToggle, videoMenu);
         closeMenu(audioToggle, audioMenu);
     });
-
-    // Close after selecting an item
-    if (videoMenu) videoMenu.addEventListener('click', () => closeMenu(videoToggle, videoMenu));
-    if (audioMenu) audioMenu.addEventListener('click', () => closeMenu(audioToggle, audioMenu));
 
     // Keep UI synced when settings panel changes device
     if (videoSelect) videoSelect.addEventListener('change', rebuildVideoMenu);
