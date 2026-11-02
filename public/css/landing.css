@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css?family=Fira+Sans:600|Lato:400&display=swap');
+@import url('/vendor/fonts.googleapis.com/firasans-600-lato-400.css');
 
 html {
     line-height: 1.15;

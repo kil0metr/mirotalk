@@ -24,3 +24,6 @@ output
 env.txt
 
 .idea
+
+# crack: filled by vendor/vendor.mjs fetch
+public/vendor/

@@ -55,13 +55,13 @@ class BackgroundEffects {
     loadModel() {
         if (!this.modelPromise) {
             this.modelPromise = (async () => {
-                const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21';
+                const base = `${window.location.origin}/vendor/cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21`;
                 const { FilesetResolver, ImageSegmenter, DrawingUtils } = await import(`${base}/vision_bundle.mjs`);
                 const files = await FilesetResolver.forVisionTasks(`${base}/wasm`);
                 const segmenter = await ImageSegmenter.createFromOptions(files, {
                     baseOptions: {
                         modelAssetPath:
-                            'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/1/selfie_segmenter_landscape.tflite',
+                            `${window.location.origin}/vendor/storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter_landscape/float16/1/selfie_segmenter_landscape.tflite`,
                         delegate: 'GPU',
                     },
                     canvas: this.maskCanvas,

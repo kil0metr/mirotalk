@@ -1,0 +1,48 @@
+# crack: the image of this fork for sub (itsiam, decision app-forks).
+#
+# Runs on `native`, right on the runner machine, where podman is: no
+# dependency code runs during the build (npm ci --ignore-scripts, see
+# Dockerfile), only our commands and the tools of the pinned base image.
+# This directory also keeps Forgejo from running the upstream
+# .github/workflows.
+name: image
+
+on:
+  push:
+    branches: [crack]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: native
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to the forge registry
+        run: |
+          podman login "$REGISTRY" -u "${{ github.repository_owner }}" \
+            --password-stdin <<<"${{ secrets.REGISTRY_TOKEN }}"
+        env:
+          REGISTRY: git.internal
+
+      # The tag is immutable: the registry deletes a manifest no tag points
+      # to, and itsiam pins the image by digest.
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' package.json | head -n 1)
+          IMG="git.internal/${{ github.repository_owner }}/mirotalk-p2p"
+          TAG="$VERSION-crack.${{ github.run_number }}"
+          podman build \
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=$TAG" \
+            -t "$IMG:$TAG" .
+          podman push --format oci --digestfile digest "$IMG:$TAG"
+          echo "image:  $IMG:$TAG"
+          echo "digest: $(cat digest)"
+          echo "id:     $(podman image inspect --format '{{.Id}}' "$IMG:$TAG")"
