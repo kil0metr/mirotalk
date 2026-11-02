@@ -461,6 +461,17 @@ module.exports = {
                                 >miroslav.pejic.85@gmail.com</a>
                             </dd>
                         </div>
+                        <!-- crack: AGPL-3.0 §13, the source of this modified version -->
+                        <div>
+                            <dt>Source</dt>
+                            <dd>
+                                <a
+                                    href="https://github.com/kil0metr/mirotalk/tree/crack"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                >Modified version, AGPL-3.0</a>
+                            </dd>
+                        </div>
                     </dl>
                     <footer class="about-footer">
                         &copy; ${new Date().getFullYear()} MiroTalk P2P. All rights reserved.
