@@ -127,6 +127,28 @@
             <span id="roomTimeLimitDisplay" class="notranslate">00:00:00</span>
         </div>
 
+        <!-- Lobby: guests waiting to be admitted (presenters only, state kept by the signaling server) -->
+
+        <section id="lobbyPanel" class="lobby-panel hidden" role="region" aria-label="Lobby" aria-live="polite">
+            <header class="lobby-header">
+                <i class="fas fa-user-clock" aria-hidden="true"></i>
+                <span class="lobby-title">Waiting in the lobby</span>
+                <span id="lobbyCount" class="lobby-count notranslate">0</span>
+                <button id="lobbyToggleBtn" class="lobby-toggle-btn" type="button" aria-expanded="true">
+                    <i class="fas fa-chevron-up" aria-hidden="true"></i>
+                </button>
+            </header>
+            <ul id="lobbyList" class="lobby-list"></ul>
+            <footer class="lobby-actions">
+                <button id="lobbyAcceptAllBtn" class="lobby-accept-all-btn" type="button">
+                    <i class="fas fa-check-double"></i>&nbsp;Accept all
+                </button>
+                <button id="lobbyRejectAllBtn" class="lobby-reject-all-btn" type="button">
+                    <i class="fas fa-xmark"></i>&nbsp;Reject all
+                </button>
+            </footer>
+        </section>
+
         <!-- init user devices -->
 
         <div id="initUser" class="init-user hidden">
@@ -721,6 +743,33 @@
                         <div class="msger-composer">
                             <section id="msgerEmojiPicker" class="hidden fadein chatEmojiPicker"></section>
 
+                            <!-- CHAT GIF (KLIPY) -->
+                            <section
+                                id="msgerGifPicker"
+                                class="hidden fadein chatGifPicker"
+                                role="dialog"
+                                aria-label="GIF search"
+                            >
+                                <input
+                                    id="msgerGifSearchInput"
+                                    class="chat-gif-search"
+                                    type="search"
+                                    autocomplete="off"
+                                    aria-label="Search GIFs"
+                                    translate="no"
+                                />
+                                <div id="msgerGifResults" class="chat-gif-results"></div>
+                                <div id="msgerGifStatus" class="chat-gif-status hidden" aria-live="polite"></div>
+                                <a
+                                    class="chat-gif-attribution"
+                                    href="https://klipy.com"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    translate="no"
+                                    >Powered by KLIPY</a
+                                >
+                            </section>
+
                             <div class="msger-inputarea">
                                 <textarea
                                     rows="1"
@@ -733,6 +782,15 @@
 
                             <div class="msger-input-buttons">
                                 <button id="msgerEmojiBtn" class="fas fa-smile"></button>
+                                <button
+                                    id="msgerGifBtn"
+                                    type="button"
+                                    aria-label="Choose GIF"
+                                    aria-expanded="false"
+                                    style="display: none"
+                                >
+                                    <span class="chat-gif-btn-label" translate="no">GIF</span>
+                                </button>
                                 <button id="msgerMarkdownBtn" class="fab fa-markdown"></button>
                                 <button id="msgerShareFileBtn" class="fas fa-paperclip"></button>
                                 <button id="msgerVideoUrlBtn" class="fab fa-youtube"></button>
@@ -994,6 +1052,12 @@
                             </button>
                             <button id="joinUnlockBtn" class="red">
                                 <i class="fas fa-door-open red"></i>&nbsp;Unlock room
+                            </button>
+                            <button id="lobbyOnBtn" class="orange">
+                                <i class="fas fa-user-clock orange"></i>&nbsp;Enable lobby
+                            </button>
+                            <button id="lobbyOffBtn" class="red">
+                                <i class="fas fa-user-check red"></i>&nbsp;Disable lobby
                             </button>
                             <button id="lockRoomBtn" class="orange">
                                 <i class="fas fa-lock-open orange"></i>&nbsp;Set room password
@@ -2506,6 +2570,7 @@
                 data-template-attr-data-chat-type="chatType"
                 data-template-attr-data-chat-peer="chatPeer"
                 data-template-attr-data-msg-id="messageId"
+                data-template-attr-data-from-id="messageFromId"
             >
                 <img class="msg-img" data-template-attr-id="messageAvatarTmpId" />
                 <div data-template-attr-class="messageBubbleClass">
@@ -2763,6 +2828,7 @@ Note</textarea>
         <script defer src="../js/editor.js"></script>
         <script defer src="../js/poll.js"></script>
         <script defer src="../js/breakout.js"></script>
+        <script defer src="../js/lobby.js"></script>
         <script defer src="../js/videoGrid.js"></script>
         <script defer src="../js/screenCameraLayout.js"></script>
         <script defer src="../js/swal.js"></script>
@@ -2773,6 +2839,7 @@ Note</textarea>
         <script defer src="../js/roomTemplate.js"></script>
         <script defer src="../js/background-effects.js"></script>
         <script defer src="../js/roomBackground.js"></script>
+        <script defer src="../js/gifSearch.js"></script>
         <script defer src="../js/client.js"></script>
         <script defer src="../js/networkStats.js"></script>
         <script defer src="../js/speechRecognition.js"></script>

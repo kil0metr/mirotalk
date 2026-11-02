@@ -364,7 +364,7 @@ describe('SweetAlert notification UX', () => {
         it(`${confirmed ? 'performs' : 'cancels'} message deletion only after the centered confirmation`, async () => {
             const remove = sinon.spy();
             context.images = { delete: 'delete.svg' };
-            context.getId = sinon.stub().returns({ remove });
+            context.getId = sinon.stub().returns({ remove, dataset: {} });
             context.refreshMessageGrouping = sinon.spy();
             context.toggleMsgerEmptyNotice = sinon.spy();
             const functionStart = client.indexOf('function deleteMessage(');
@@ -376,6 +376,7 @@ describe('SweetAlert notification UX', () => {
             assert.equal(options.title, 'Delete');
             assert.equal(options.focusCancel, true);
             assert.equal(options.customClass.confirmButton, 'mirotalk-swal-destructive');
+            assert.equal(options.showDenyButton, false);
             sinon.assert.notCalled(remove);
             close({ isConfirmed: confirmed });
             await Promise.resolve();
@@ -383,6 +384,169 @@ describe('SweetAlert notification UX', () => {
             assert.equal(context.refreshMessageGrouping.callCount, confirmed ? 1 : 0);
         });
     }
+
+    for (const fromId of ['me', 'peer-2']) {
+        it(`${fromId === 'me' ? 'offers' : 'hides'} delete for everyone on ${fromId === 'me' ? 'own' : 'peer'} messages`, async () => {
+            const remove = sinon.spy();
+            context.images = { delete: 'delete.svg' };
+            context.myPeerId = 'me';
+            context.chatMessages = [{ msgId: 'm-1' }, { msgId: 'm-2' }];
+            context.chatMessageRaw = new Map([['m-1', 'raw']]);
+            context.getId = sinon.stub().returns({ remove, dataset: { msgId: 'm-1', fromId } });
+            context.sendToDataChannel = sinon.spy();
+            context.refreshMessageGrouping = sinon.spy();
+            context.toggleMsgerEmptyNotice = sinon.spy();
+            const functionStart = client.indexOf('function deleteMessage(');
+            const functionEnd = client.indexOf('\nfunction copyToClipboard(', functionStart);
+            vm.runInContext(client.slice(functionStart, functionEnd), context);
+            context.deleteMessage('message-1');
+            const options = swal.fire.firstCall.args[0];
+            const isOwn = fromId === 'me';
+            assert.equal(options.showDenyButton, isOwn);
+            assert.equal(options.confirmButtonText, isOwn ? 'Delete for me' : 'Delete');
+            close({ isDenied: true });
+            await Promise.resolve();
+            assert.equal(remove.callCount, isOwn ? 1 : 0);
+            assert.equal(context.sendToDataChannel.callCount, isOwn ? 1 : 0);
+            if (isOwn) {
+                assert.deepEqual(JSON.parse(JSON.stringify(context.sendToDataChannel.firstCall.args[0])), {
+                    type: 'chatDelete',
+                    msg_id: 'm-1',
+                    fromId: 'me',
+                });
+                assert.deepEqual(
+                    context.chatMessages.map((m) => m.msgId),
+                    ['m-2']
+                );
+                assert.equal(context.chatMessageRaw.has('m-1'), false);
+            }
+        });
+    }
+
+    it('removes incoming deleted messages only when authored by the sending peer', () => {
+        const doc = dom.window.document;
+        const chat = doc.createElement('div');
+        chat.innerHTML = `
+            <div class="msg" data-msg-id="m-1" data-from-id="peer-1" data-chat-type="public"></div>
+            <div class="msg" data-msg-id="m-2" data-from-id="peer-2" data-chat-type="public"></div>`;
+        doc.body.appendChild(chat);
+        context.msgerChat = chat;
+        context.chatMessages = [{ msgId: 'm-1' }, { msgId: 'm-2' }];
+        context.chatMessageRaw = new Map();
+        context.unreadMessages = { public: 2, private: {} };
+        context.isConversationCurrentlyVisible = () => false;
+        context.refreshUnreadBadges = sinon.spy();
+        context.refreshMessageGrouping = sinon.spy();
+        context.toggleMsgerEmptyNotice = sinon.spy();
+        const functionStart = client.indexOf('function removeChatMessageElement(');
+        const functionEnd = client.indexOf('\nfunction copyToClipboard(', functionStart);
+        vm.runInContext(client.slice(functionStart, functionEnd), context);
+
+        context.handleDataChannelChatDelete({ type: 'chatDelete', msg_id: 'm-2' }, 'peer-1');
+        assert.equal(chat.querySelectorAll('.msg').length, 2);
+
+        context.handleDataChannelChatDelete({ type: 'chatDelete', msg_id: 'm-1' }, 'peer-1');
+        assert.equal(chat.querySelector('[data-msg-id="m-1"]'), null);
+        assert.ok(chat.querySelector('[data-msg-id="m-2"]'));
+        assert.deepEqual(
+            context.chatMessages.map((m) => m.msgId),
+            ['m-2']
+        );
+        assert.equal(context.unreadMessages.public, 1);
+        chat.remove();
+    });
+
+    const loadChatEdit = (chat) => {
+        context.msgerChat = chat;
+        context.myPeerId = 'me';
+        context.chatMessageRaw = new Map();
+        context.sendToDataChannel = sinon.spy();
+        context.filterXSS = (s) => s;
+        context.checkMsg = (s) => (s.trim() ? s : undefined);
+        context.processMessage = (s) => `<p>${s}</p>`;
+        context.hljs = { highlightAll: sinon.spy() };
+        context.getFormatDate = () => '10:00';
+        const functionStart = client.indexOf('function isOwnSharedChatMessage(');
+        const functionEnd = client.indexOf('\nfunction copyToClipboard(', functionStart);
+        vm.runInContext(client.slice(functionStart, functionEnd), context);
+    };
+
+    const chatEditMarkup = `
+        <div class="msg" id="msg-1" data-msg-id="m-1" data-from-id="me">
+            <div class="msg-info-time">09:00</div>
+            <div class="msg-text"><span id="message-1">old</span></div>
+        </div>
+        <div class="msg" id="msg-2" data-msg-id="m-2" data-from-id="peer-1">
+            <div class="msg-info-time">09:01</div>
+            <div class="msg-text"><span id="message-2">peer</span></div>
+        </div>`;
+
+    it('edits own messages for everyone and marks them as edited', async () => {
+        const doc = dom.window.document;
+        const chat = doc.createElement('div');
+        chat.innerHTML = chatEditMarkup;
+        doc.body.appendChild(chat);
+        loadChatEdit(chat);
+        context.chatMessages = [{ msgId: 'm-1', msg: 'old' }];
+        context.chatMessageRaw.set('m-1', 'old raw');
+        context.getId = (id) => doc.getElementById(id);
+
+        context.editMessage('msg-1');
+        const options = swal.fire.firstCall.args[0];
+        assert.equal(options.title, 'Edit message');
+        assert.equal(options.input, 'textarea');
+        assert.equal(options.inputValue, 'old raw');
+        close({ isConfirmed: true, value: 'new text' });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        assert.deepEqual(JSON.parse(JSON.stringify(context.sendToDataChannel.firstCall.args[0])), {
+            type: 'chatEdit',
+            msg_id: 'm-1',
+            fromId: 'me',
+            msg: 'new text',
+        });
+        assert.equal(doc.getElementById('message-1').innerHTML, '<p>new text</p>');
+        assert.equal(chat.querySelector('#msg-1 .msg-edited-badge').textContent, 'edited');
+        assert.equal(context.chatMessageRaw.get('m-1'), 'new text');
+        assert.equal(context.chatMessages[0].msg, 'new text');
+        assert.equal(context.chatMessages[0].edited, true);
+        chat.remove();
+    });
+
+    it('does not offer editing of peer messages', () => {
+        const doc = dom.window.document;
+        const chat = doc.createElement('div');
+        chat.innerHTML = chatEditMarkup;
+        doc.body.appendChild(chat);
+        loadChatEdit(chat);
+        context.getId = (id) => doc.getElementById(id);
+
+        context.editMessage('msg-2');
+        sinon.assert.notCalled(swal.fire);
+        chat.remove();
+    });
+
+    it('applies incoming edits only when authored by the sending peer', () => {
+        const doc = dom.window.document;
+        const chat = doc.createElement('div');
+        chat.innerHTML = chatEditMarkup;
+        doc.body.appendChild(chat);
+        loadChatEdit(chat);
+        context.chatMessages = [];
+
+        context.handleDataChannelChatEdit({ type: 'chatEdit', msg_id: 'm-2', msg: 'hijack' }, 'peer-9');
+        assert.equal(doc.getElementById('message-2').innerHTML, 'peer');
+        assert.equal(chat.querySelector('#msg-2 .msg-edited-badge'), null);
+
+        context.handleDataChannelChatEdit({ type: 'chatEdit', msg_id: 'm-2', msg: '   ' }, 'peer-1');
+        assert.equal(doc.getElementById('message-2').innerHTML, 'peer');
+
+        context.handleDataChannelChatEdit({ type: 'chatEdit', msg_id: 'm-2', msg: 'fixed' }, 'peer-1');
+        assert.equal(doc.getElementById('message-2').innerHTML, '<p>fixed</p>');
+        assert.ok(chat.querySelector('#msg-2 .msg-edited-badge'));
+        chat.remove();
+    });
 
     for (const confirmed of [false, true]) {
         it(`${confirmed ? 'sends' : 'does not send'} an eject action after confirmation`, async () => {

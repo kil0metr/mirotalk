@@ -1,7 +1,11 @@
 'use strict';
 
 const pathParts = window.location.pathname.split('/');
-const roomId = pathParts[pathParts.length - 1];
+const roomPath = pathParts[pathParts.length - 1];
+let roomId = roomPath;
+try {
+    roomId = decodeURIComponent(roomPath); // /join/abc%25 -> abc%
+} catch {} // malformed percent-encoding: keep the raw value
 const statusEl = document.getElementById('waitingStatus');
 const loginLink = document.getElementById('loginLink');
 const waitingRoomNameEl = document.getElementById('waitingRoomName');
