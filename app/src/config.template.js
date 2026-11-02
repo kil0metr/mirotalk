@@ -357,7 +357,7 @@ module.exports = {
         htmlInjection: true,
         app: {
             language: 'en', // https://en.wikipedia.org/wiki/List_of_ISO_639_language_codes
-            translationMode: 'google', // In-room UI: auto (native file else Google) | native (human files only, no Google) | google (default, always Google)
+            translationMode: 'native', // crack: no Google widget, a page loads nothing from third parties. In-room UI: auto (native file else Google) | native (human files only, no Google) | google (default, always Google)
             name: 'MiroTalk',
             title: '<h1>MiroTalk</h1>Free browser based Real-time video calls.<br />Simple, Secure, Fast.',
             description:

@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
+@import url('/vendor/fonts.googleapis.com/montserrat-400-700.css');
 
 :root {
     --primary-bg: #0f1117;

@@ -7340,6 +7340,20 @@ function adaptAspectRatio() {
     setAspectRatio(isMobileDevice ? mobile : desktop);
 }
 
+let emojiMartDataPromise;
+
+/**
+ * Emoji data for EmojiMart pickers, served by this node
+ * crack: without it EmojiMart fetches the data set from cdn.jsdelivr.net
+ * @returns {Promise<object>} emoji data set
+ */
+function getEmojiMartData() {
+    emojiMartDataPromise ??= fetch('/vendor/cdn.jsdelivr.net/npm/@emoji-mart/data@1.2.1/sets/15/native.json').then(
+        (res) => res.json()
+    );
+    return emojiMartDataPromise;
+}
+
 /**
  * Get Gravatar from email
  * @param {string} email
@@ -7347,17 +7361,10 @@ function adaptAspectRatio() {
  * @returns object image
  */
 function genGravatar(email, size = false) {
-    const hash = md5(email.toLowerCase().trim());
-    const avatarSize = size || 250;
-    const gravatarURL = `https://www.gravatar.com/avatar/${hash}?s=${avatarSize}&d=404`;
-    // d=404: no Gravatar for this email -> the image errors and is swapped to the initials avatar
-    if (!gravatarFallbacks.has(gravatarURL)) {
-        gravatarFallbacks.set(gravatarURL, genAvatarSvg(email, avatarSize));
-    }
-    return gravatarURL;
-    function md5(input) {
-        return CryptoJS.MD5(input).toString();
-    }
+    // crack: no Gravatar, a page loads nothing from third parties (and the
+    // email hash would leave with the request); the initials avatar it used
+    // to fall back to is the avatar.
+    return genAvatarSvg(email, size || 250);
 }
 
 /**
@@ -9162,6 +9169,7 @@ function setRoomEmojiButton() {
     emojiMartDiv.setAttribute('role', 'tabpanel');
     const pickerRoomOptions = {
         theme: 'dark',
+        data: getEmojiMartData,
         onEmojiSelect: sendEmojiToRoom,
     };
     const emojiRoomPicker = new EmojiMart.Picker(pickerRoomOptions);
@@ -9269,6 +9277,7 @@ function setChatEmojiBtn() {
     // Add emoji picker
     const pickerOptions = {
         theme: 'dark',
+        data: getEmojiMartData,
         onEmojiSelect: addEmojiToMsg,
     };
     const emojiPicker = new EmojiMart.Picker(pickerOptions);
@@ -11227,6 +11236,7 @@ function toggleUsernameEmoji() {
 function handleUsernameEmojiPicker() {
     const pickerOptions = {
         theme: 'dark',
+        data: getEmojiMartData,
         onEmojiSelect: addEmojiToUsername,
     };
     const emojiUsernamePicker = new EmojiMart.Picker(pickerOptions);
@@ -16045,32 +16055,9 @@ async function updateMyPeerAvatarByUrl() {
                 localGrid.appendChild(makeAvatarImg(url));
             }
 
-            // DiceBear random avatars
-            const randomAvatarLabel = document.createElement('p');
-            randomAvatarLabel.textContent = 'Or pick a random avatar:';
-            randomAvatarLabel.style.cssText = 'color:#aaa;font-size:12px;margin:10px 0 6px;text-align:center;';
-
-            const randomAvatarGrid = document.createElement('div');
-            randomAvatarGrid.style.cssText =
-                'display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-bottom:4px;';
-            const dicebearStyles = [
-                'bottts-neutral',
-                'adventurer-neutral',
-                'thumbs',
-                'initials',
-                'identicon',
-                'shapes',
-            ];
-
-            for (let i = 0; i < 6; i++) {
-                const seed = Math.random().toString(36).substring(2, 10);
-                const style = dicebearStyles[i % dicebearStyles.length];
-                const url = `https://api.dicebear.com/9.x/${style}/svg?seed=${encodeURIComponent(seed)}`;
-                randomAvatarGrid.appendChild(makeAvatarImg(url));
-            }
-
+            // crack: no DiceBear random avatars, they come from a third-party API.
             let insertAfter = input;
-            for (const el of [localLabel, localGrid, randomAvatarLabel, randomAvatarGrid]) {
+            for (const el of [localLabel, localGrid]) {
                 insertAfter.parentNode.insertBefore(el, insertAfter.nextSibling);
                 insertAfter = el;
             }
